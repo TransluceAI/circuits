@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "util"
+version = "0.0.1"
+description = "Utility library"
+
+requires-python = "==3.12.*"
+dependencies = [
+    "backoff>=2.2.1",
+    "datasets>=2.20.0",
+    "matplotlib>=3.9.0",
+    "nnsight>=0.3.7,<0.4.0",
+    "numpy>=1.26.4",
+    "openai>=1.68.0",
+    "anthropic>=0.47.0",
+    "orjson>=3.10.6",
+    "scikit-learn>=1.5.0",
+    "tiktoken>=0.7.0",
+    "torch",
+    "transformers>=4.48.0",
+    "python-dotenv>=1.0.1",
+    "text-dedup>=0.4.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["util"]
+
+[tool.pyright]
+strict = ["util"]
+reportMissingTypeStubs = false
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.uv]
+managed = false

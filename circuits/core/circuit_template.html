@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+            background-color: #f5f5f5;
+        }
+
+        .container {
+            display: flex;
+            height: 60vh;
+            gap: 20px;
+        }
+
+        .visualization-panel {
+            width: 60%;
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow-x: auto;
+            overflow-y: hidden;
+        }
+
+        .visualization-container {
+            min-width: 100%;
+            height: 100%;
+            padding-right: 20px;
+        }
+
+        .info-panel {
+            width: 40%;
+            background: white;
+            border-radius: 8px;
+            padding: 15px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow-y: auto;
+            font-size: 11px;
+        }
+
+        .features-container {
+            display: flex;
+            gap: 10px;
+        }
+
+        .features-column {
+            flex: 1;
+        }
+
+        .node {
+            stroke: #333;
+            stroke-width: 1px;
+            cursor: pointer;
+            fill: #ddd;
+        }
+
+        .node.selected {
+            stroke: #ff1493;
+            stroke-width: 3px;
+        }
+
+        .node:hover {
+            stroke-width: 2px;
+            fill: #bbb;
+        }
+
+        .node.highlighted {
+            stroke: #ff6600;
+            stroke-width: 2px;
+            fill: #ffcc99;
+        }
+
+        .link {
+            stroke: #999;
+            stroke-width: 1px;
+            cursor: pointer;
+        }
+
+        .link:hover {
+            stroke: #333;
+            stroke-width: 2px;
+        }
+
+        .link.highlighted {
+            stroke: #ff6600;
+            stroke-width: 2px;
+            stroke-opacity: 0.8 !important;
+        }
+
+        .axis {
+            font-size: 8px;
+        }
+
+        .info-section {
+            margin-bottom: 15px;
+        }
+
+        .info-title {
+            font-size: 12px;
+            font-weight: bold;
+            margin-bottom: 8px;
+            color: #333;
+        }
+
+        .feature-item {
+            margin-bottom: 8px;
+            padding: 8px;
+            background: #f8f9fa;
+            border-radius: 4px;
+            border-left: 3px solid #007bff;
+            font-size: 10px;
+            cursor: pointer;
+        }
+
+        .feature-item:hover {
+            background: #e9ecef;
+        }
+
+        .feature-weight {
+            font-weight: bold;
+            color: #007bff;
+            float: right;
+            font-family: 'Courier New', monospace;
+            text-align: right;
+        }
+
+        .feature-description {
+            color: #666;
+            margin-top: 4px;
+            word-wrap: break-word;
+        }
+
+        .feature-truncated {
+            color: #999;
+            font-style: italic;
+        }
+
+        .selected-node {
+            background: #fff3cd;
+            border-left-color: #ffc107;
+            padding: 12px;
+            margin-bottom: 12px;
+        }
+
+        .selected-node-title {
+            font-weight: bold;
+            color: #856404;
+            margin-bottom: 8px;
+            font-size: 11px;
+        }
+
+        .selected-node-desc {
+            color: #333;
+            font-size: 10px;
+        }
+
+        .attribution-values {
+            color: #007bff;
+            font-size: 10px;
+            font-weight: bold;
+            margin-bottom: 6px;
+            font-family: 'Courier New', monospace;
+        }
+
+        .activations-label {
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 8px;
+        }
+
+        .activations-container {
+            display: flex;
+            flex-wrap: wrap;
+        }
+
+        .activation-value {
+            padding: 2px 6px;
+            border-radius: 3px;
+            margin: 1px;
+            display: inline-block;
+            font-family: 'Courier New', monospace;
+            font-size: 9px;
+            border: 1px solid #33333330;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="visualization-panel">
+            <div class="visualization-container">
+                <svg id="circuit-svg"></svg>
+            </div>
+        </div>
+
+        <div class="info-panel">
+            <div id="selected-node-info"></div>
+            <div class="features-container">
+                <div class="features-column">
+                    <div class="info-section">
+                        <div class="info-title">Input Features</div>
+                        <div id="input-features"></div>
+                    </div>
+                </div>
+                <div class="features-column">
+                    <div class="info-section">
+                        <div class="info-title">Output Features</div>
+                        <div id="output-features"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Data
+        const nodes = {{ nodes_data }};
+        const edges = {{ edges_data }};
+        const tokenPositions = {{ token_positions }};
+        const tokenLabels = {{ token_labels }};
+        const focusTokens = {{ focus_tokens }};
+        const batchLabels = {{ batch_labels }};
+
+        let selectedNode = null;
+
+        // Calculate attribution data range for normalization
+        function calculateAttributionRange() {
+            let minAttribution = Infinity;
+            let maxAttribution = -Infinity;
+
+            nodes.forEach(node => {
+                // Skip layer 32 and error nodes
+                if (node.layer === 32 || node.neuron_idx === -1) {
+                    return;
+                }
+                if (node.attribution && node.attribution.length > 0) {
+                    const attributionValues = Array.isArray(node.attribution[0]) ? node.attribution[0] : node.attribution;
+                    attributionValues.forEach(val => {
+                        const numVal = parseFloat(val);
+                        if (!isNaN(numVal)) {
+                            minAttribution = Math.min(minAttribution, numVal);
+                            maxAttribution = Math.max(maxAttribution, numVal);
+                        }
+                    });
+                }
+            });
+
+            // If no valid attribution data found, use default range
+            if (minAttribution === Infinity || maxAttribution === -Infinity) {
+                return { min: -1, max: 1 };
+            }
+
+            return { min: minAttribution, max: maxAttribution };
+        }
+
+        // Calculate the attribution range once
+        const attributionRange = calculateAttributionRange();
+
+        // Function to normalize attribution value to [-1, 1] range
+        function normalizeAttribution(value) {
+            const { min, max } = attributionRange;
+
+            if ((max - min) === 0) {
+                return 0; // All values are the same
+            }
+
+            // Normalize to [-1, 1] range
+            if (value > 0) {
+                if (max === 0) return 0;
+                return value / max;
+            } else if (value < 0) {
+                if (min === 0) return 0;
+                return -value / min;
+            } else {
+                return 0;
+            }
+        }
+
+        // Set up dimensions
+        const svg = d3.select("#circuit-svg");
+        const container = document.querySelector('.visualization-panel');
+        const margin = {top: 30, right: 30, bottom: 50, left: 60};
+
+        // Calculate the width needed for all nodes
+        const nodesByPosition = d3.group(nodes, d => d.position);
+        const positionSpacing = new Map();
+        nodesByPosition.forEach((nodesAtPos, pos) => {
+            const layerGroups = d3.group(nodesAtPos, d => d.layer);
+            let maxNodesInLayer = 0;
+            layerGroups.forEach(layerNodes => {
+                maxNodesInLayer = Math.max(maxNodesInLayer, layerNodes.length);
+            });
+            positionSpacing.set(pos, maxNodesInLayer);  // Map position to maxNodesInLayer
+        });
+
+        // Calculate cumulative x positions with left margin
+        const xPositions = new Map();
+        let currentX = 60;  // Start with margin for first token nodes
+        tokenPositions.forEach((pos, i) => {
+            currentX += positionSpacing.get(pos) * 10;  // Add space between markers
+            xPositions.set(pos, currentX);
+            currentX += 20;
+        });
+
+        // Calculate the total width needed
+        const totalWidth = Math.max(currentX + 100, container.clientWidth - margin.left - margin.right);
+        const height = container.clientHeight - margin.top - margin.bottom;
+
+        // Set SVG dimensions
+        svg.attr("width", totalWidth + margin.left + margin.right)
+           .attr("height", height + margin.top + margin.bottom);
+
+        // Set minimum width for the visualization container
+        const visualizationContainer = document.querySelector('.visualization-container');
+        visualizationContainer.style.minWidth = (totalWidth + margin.left + margin.right) + 'px';
+
+        const g = svg.append("g")
+                    .attr("transform", `translate(${margin.left},${margin.top})`);
+
+        // Use the calculated total width for the x scale
+        const xScale = d3.scaleLinear()
+            .domain([0, totalWidth])
+            .range([0, totalWidth]);
+
+        const layers = [...new Set(nodes.map(n => n.layer))].sort((a, b) => a - b);
+        const yScale = d3.scaleLinear()
+            .domain(d3.extent(layers))
+            .range([height - 40, 40]);
+
+        // Position nodes with RIGHT-ALIGNED placement - last node at position, others to the left
+        const nodePositions = new Map();
+
+        nodesByPosition.forEach((posNodes, position) => {
+            const baseX = xScale(xPositions.get(position));
+            const layerGroups = d3.group(posNodes, d => d.layer);
+
+            layerGroups.forEach((layerNodes, layer) => {
+                const baseY = yScale(layer);
+                layerNodes.forEach((node, idx) => {
+                    // Right-align: last node at position, others to the left with spacing
+                    const offsetX = -(layerNodes.length - 1 - idx) * 10;  // Smaller spacing
+                    nodePositions.set(node.id, {x: baseX + offsetX, y: baseY});
+                });
+            });
+        });
+
+        // Draw edges
+        const links = g.selectAll(".link")
+            .data(edges)
+            .enter().append("line")
+            .attr("class", "link")
+            .attr("x1", d => nodePositions.get(d.source).x)
+            .attr("y1", d => nodePositions.get(d.source).y)
+            .attr("x2", d => nodePositions.get(d.target).x)
+            .attr("y2", d => nodePositions.get(d.target).y)
+            .attr("stroke-opacity", d => Math.max(0.2, d.opacity))
+            .on("click", function(event, d) {
+                // Select target node when edge is clicked
+                const targetNode = nodes.find(n => n.id === d.target);
+                selectNode(targetNode);
+            });
+
+        // Draw nodes
+        const nodeElements = g.selectAll(".node")
+            .data(nodes)
+            .enter().append("path")
+            .attr("class", "node")
+            .attr("d", d => {
+                const x = nodePositions.get(d.id).x;
+                const y = nodePositions.get(d.id).y;
+                const size = 4; // Size for both circle and rhombus
+
+                if (d.neuron_idx === -1) {
+                    // Draw rhombus shape
+                    return `M ${x} ${y - size} L ${x + size} ${y} L ${x} ${y + size} L ${x - size} ${y} Z`;
+                } else {
+                    // Draw circle shape
+                    return `M ${x - size} ${y} A ${size} ${size} 0 0 1 ${x + size} ${y} A ${size} ${size} 0 0 1 ${x - size} ${y}`;
+                }
+            })
+            .style("fill", d => {
+                // Get attribution value
+                let attribution = 0;
+                if (d.attribution && d.attribution.length > 0) {
+                    const attributionValues = Array.isArray(d.attribution[0]) ? d.attribution[0] : d.attribution;
+                    // Use the maximum absolute value but preserve sign
+                    const maxValue = Math.max(...attributionValues.map(val => Math.abs(parseFloat(val))));
+                    const maxIndex = attributionValues.findIndex(val => Math.abs(parseFloat(val)) === maxValue);
+                    attribution = parseFloat(attributionValues[maxIndex]);
+                }
+
+                // Normalize attribution using the actual data range
+                const normalizedAttribution = normalizeAttribution(attribution);
+
+                if (normalizedAttribution > 0) {
+                    // Positive attribution: white to blue
+                    const intensity = normalizedAttribution;
+                    const red = Math.round(255 * (1 - intensity));
+                    const green = Math.round(255 * (1 - intensity));
+                    const blue = 255;
+                    return `rgb(${red}, ${green}, ${blue})`;
+                } else if (normalizedAttribution < 0) {
+                    // Negative attribution: white to red
+                    const intensity = Math.abs(normalizedAttribution);
+                    const red = 255;
+                    const green = Math.round(255 * (1 - intensity));
+                    const blue = Math.round(255 * (1 - intensity));
+                    return `rgb(${red}, ${green}, ${blue})`;
+                } else {
+                    // Zero attribution: white
+                    return '#ffffff';
+                }
+            })
+            .style("opacity", 1.0) // Keep opacity at 100% so edges remain visible
+            .on("click", function(event, d) {
+                selectNode(d);
+            })
+            .on("mouseover", function(event, d) {
+                highlightNodeAndEdges(d.id, true);
+            })
+            .on("mouseout", function(event, d) {
+                highlightNodeAndEdges(d.id, false);
+            });
+
+        // Add token labels on x-axis (smaller)
+        const tokenLabelElements = g.selectAll(".token-label")
+            .data(tokenPositions)
+            .enter().append("text")
+            .attr("class", "token-label")
+            .attr("x", d => xScale(xPositions.get(d)))
+            .attr("y", height - 20)
+            .attr("text-anchor", "start")
+            .attr("transform", d => `rotate(45, ${xScale(xPositions.get(d))}, ${height - 20})`)
+            .style("font-size", "8px")
+            .text((d, i) => tokenLabels[i]);
+
+        // Add layer labels on y-axis (skip every other layer)
+        const filteredLayers = layers.filter((d, i) => i % 2 === 0);
+        const layerLabelElements = g.selectAll(".layer-label")
+            .data(filteredLayers)
+            .enter().append("text")
+            .attr("class", "layer-label")
+            .attr("x", -5)
+            .attr("y", d => yScale(d))
+            .attr("text-anchor", "end")
+            .attr("dominant-baseline", "middle")
+            .style("font-size", "8px")
+            .text(d => `L${d}`);
+
+        // Function to highlight node and connected edges
+        function highlightNodeAndEdges(nodeId, highlight) {
+            // Find connected edges
+            const connectedEdges = edges.filter(e => e.source === nodeId || e.target === nodeId);
+            const connectedNodeIds = new Set();
+
+            connectedEdges.forEach(edge => {
+                connectedNodeIds.add(edge.source);
+                connectedNodeIds.add(edge.target);
+            });
+
+            // Highlight/unhighlight edges
+            links.classed("highlighted", function(d) {
+                return highlight && (d.source === nodeId || d.target === nodeId);
+            });
+
+            // Highlight/unhighlight connected nodes
+            nodeElements.classed("highlighted", function(d) {
+                return highlight && connectedNodeIds.has(d.id) && d.id !== nodeId;
+            });
+        }
+
+        // Function to truncate text
+        function truncateText(text, maxLength = 50) {
+            if (text.length <= maxLength) return text;
+            return text.substring(0, maxLength) + "...";
+        }
+
+        // Function to select a node
+        function selectNode(node) {
+            selectedNode = node;
+
+            // Update node styling
+            nodeElements.classed("selected", d => d.id === node.id);
+
+            // Calculate total incoming weight
+            const incomingEdges = edges.filter(e => e.target === node.id);
+            const totalIncomingWeight = incomingEdges.reduce((sum, edge) => {
+                return sum + (typeof edge.weight === 'number' ? edge.weight : 0);
+            }, 0);
+
+            // Format attribution values for display
+            let attributionText = '';
+            if (node.attribution && node.attribution.length > 0 && focusTokens && focusTokens.length > 0) {
+                // Handle nested array structure - attribution might be [Array(n)]
+                const attributionValues = node.attribution;
+                const activations = node.activations;
+
+                // Transpose attribution values for sorting
+                const transposed = attributionValues[0].map((_, colIndex) =>
+                    attributionValues.map(row => row[colIndex])
+                );
+
+                // Create array of indices and corresponding focus tokens for sorting
+                const tokenIndices = transposed.map((_, index) => index);
+
+                // Sort attribution values by max - min for each token, keeping track of original indices
+                const sortedIndices = [...tokenIndices].sort((indexA, indexB) => {
+                    const a = transposed[indexA];
+                    const b = transposed[indexB];
+                    const argmaxA = a.indexOf(Math.max(...a));
+                    const argmaxB = b.indexOf(Math.max(...b));
+                    if (argmaxA !== argmaxB) {
+                        return argmaxA - argmaxB;
+                    }
+                    return -(Math.max(...a) - Math.min(...a) - (Math.max(...b) - Math.min(...b)));
+                });
+
+                // Create sorted arrays
+                const sortedTransposed = sortedIndices.map(index => transposed[index]);
+                const sortedFocusTokens = sortedIndices.map(index => focusTokens[index]);
+
+                // Transpose back to original structure
+                const sortedAttributionValues = sortedTransposed[0].map((_, colIndex) =>
+                    sortedTransposed.map(row => row[colIndex])
+                );
+
+                let tableRows = '';
+                for (let i = 0; i < sortedAttributionValues[0].length; i++) {
+                    const token = sortedFocusTokens[i];
+                    tableRows += `<tr><td style="padding: 2px 8px; border-bottom: 1px solid #eee; font-size: 9px;">${token}</td>`;
+                    for (let j = 0; j < sortedAttributionValues.length; j++) {
+                        const val = parseFloat(sortedAttributionValues[j][i]);
+                        const formattedVal = val.toFixed(4);
+                        const color = val >= 0 ? '#007bff' : '#dc3545';
+                        tableRows += `<td style="padding: 2px 8px; border-bottom: 1px solid #eee; font-size: 9px; text-align: right; font-family: 'Courier New', monospace; color: ${color};">${formattedVal}</td>`;
+                    }
+                    tableRows += '</tr>';
+                }
+                attributionText = `
+                    <div class="attribution-values">
+                        <table style="width: 100%; border-collapse: collapse; font-size: 9px;">
+                            <thead>
+                                <tr style="border-bottom: 2px solid #ccc;">
+                                    <th style="padding: 2px 8px; text-align: left; font-size: 9px;">Token</th>
+                                    ${batchLabels.map((label, index) => `<th style="padding: 2px 8px; text-align: right; font-size: 9px;">${label}</th>`).join('')}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td style="padding: 2px 8px; border-bottom: 1px solid #eee; font-size: 9px;"><strong>activations</strong></td>
+                                ${node.activations.map((activation, index) => {
+                                    const value = parseFloat(activation);
+                                    const color = value >= 0 ? '#28a745' : '#dc3545';
+                                    const formattedValue = value.toFixed(4);
+                                    return `<td style="text-align: right;"><span class="activation-value" style="color: ${color}; background: ${color}15; padding: 2px 6px; border-radius: 3px; margin: 1px; display: inline-block; font-family: 'Courier New', monospace; font-size: 9px; border: 1px solid ${color}30;">${formattedValue}</span></td>`;
+                                }).join('')}
+                                </tr>
+                                ${tableRows}
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+            }
+
+            // Show selected node info
+            document.getElementById('selected-node-info').innerHTML = `
+                <div class="selected-node">
+                    <div class="selected-node-title"><a href="https://neurons.transluce.org/${node.layer}/${node.neuron_idx}/${node.polarity}">L${node.layer}/P${node.position}/N${node.neuron_idx}</a> - ${node.token_text}</div>
+                    <div class="selected-node-desc">
+                        <strong>Total Incoming Weight:</strong> <span style="color: ${totalIncomingWeight >= 0 ? '#007bff' : '#dc3545'}; font-family: 'Courier New', monospace; font-weight: bold;">${totalIncomingWeight >= 0 ? '+' : ''}${(totalIncomingWeight * 100).toFixed(2)}%</span>
+                    </div>
+                    ${attributionText}
+                    <div class="selected-node-desc">${node.label}</div>
+                </div>
+            `;
+
+            // Update edge lists
+            updateEdgeInfo(node);
+        }
+
+        // Function to update edge information
+        function updateEdgeInfo(node) {
+            const incomingEdges = edges.filter(e => e.target === node.id);
+            const outgoingEdges = edges.filter(e => e.source === node.id);
+
+            // Input features (incoming edges)
+            let inputHtml = '';
+            incomingEdges.forEach(edge => {
+                const sourceNode = nodes.find(n => n.id === edge.source);
+                const truncatedLabel = truncateText(sourceNode.label, 35);
+                const isTruncated = sourceNode.label.length > 35;
+                const order = edge.order || 'FO'; // Default to FO if order not specified
+                const orderColor = order === 'FO' ? '#007bff' : '#ff6600'; // Blue for FO, Orange for SO
+
+                inputHtml += `
+                    <div class="feature-item" onclick="selectNode(nodes.find(n => n.id === '${edge.source}'))" style="border-left-color: ${typeof edge.weight === 'number' && edge.weight >= 0 ? '#007bff' : '#dc3545'}">
+                        <span class="feature-weight" style="color: ${typeof edge.weight === 'number' && edge.weight >= 0 ? '#007bff' : '#dc3545'}">
+                            ${typeof edge.weight === 'number' ? (edge.weight >= 0 ? '+' : '') + (edge.weight * 100).toFixed(2) + '%' : String(edge.weight)}
+                            ${edge.absolute_weight !== undefined ? `<div style="font-weight: normal;">${(edge.absolute_weight).toFixed(2)}</div>` : ''}
+                        </span>
+                        <div>L${sourceNode.layer} ← ${sourceNode.token_text} <span style="color: ${orderColor}; font-size: 9px; font-weight: bold;">[${order}]</span></div>
+                        <div class="feature-description ${isTruncated ? 'feature-truncated' : ''}">
+                            ${truncatedLabel}
+                        </div>
+                    </div>
+                `;
+            });
+
+            // Output features (outgoing edges)
+            let outputHtml = '';
+            outgoingEdges.forEach(edge => {
+                const targetNode = nodes.find(n => n.id === edge.target);
+                const truncatedLabel = truncateText(targetNode.label, 35);
+                const isTruncated = targetNode.label.length > 35;
+                const order = edge.order || 'FO'; // Default to FO if order not specified
+                const orderColor = order === 'FO' ? '#007bff' : '#ff6600'; // Blue for FO, Orange for SO
+
+                outputHtml += `
+                    <div class="feature-item" onclick="selectNode(nodes.find(n => n.id === '${edge.target}'))" style="border-left-color: ${typeof edge.weight === 'number' && edge.weight >= 0 ? '#007bff' : '#dc3545'}">
+                        <span class="feature-weight" style="color: ${typeof edge.weight === 'number' && edge.weight >= 0 ? '#007bff' : '#dc3545'}">
+                            ${typeof edge.weight === 'number' ? (edge.weight >= 0 ? '+' : '') + (edge.weight * 100).toFixed(2) + '%' : String(edge.weight)}
+                            ${edge.absolute_weight !== undefined ? `<div style="font-weight: normal;">${(edge.absolute_weight).toFixed(2)}</div>` : ''}
+                        </span>
+                        <div>L${targetNode.layer} → ${targetNode.token_text} <span style="color: ${orderColor}; font-size: 9px; font-weight: bold;">[${order}]</span></div>
+                        <div class="feature-description ${isTruncated ? 'feature-truncated' : ''}">
+                            ${truncatedLabel}
+                        </div>
+                    </div>
+                `;
+            });
+
+            document.getElementById('input-features').innerHTML = inputHtml || '<div style="color: #666; font-style: italic;">No input features</div>';
+            document.getElementById('output-features').innerHTML = outputHtml || '<div style="color: #666; font-style: italic;">No output features</div>';
+        }
+
+        // Initialize with no selection
+        document.getElementById('input-features').innerHTML = '<div style="color: #666; font-style: italic;">Click on a node to see features</div>';
+        document.getElementById('output-features').innerHTML = '<div style="color: #666; font-style: italic;">Click on a node to see features</div>';
+    </script>
+</body>
+</html>

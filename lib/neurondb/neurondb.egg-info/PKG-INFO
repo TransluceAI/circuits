@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: neurondb
+Version: 0.0.1
+Summary: Neuron database
+Requires-Python: ==3.12.*
+Requires-Dist: sqlalchemy>=2.0.32
+Requires-Dist: pgvector>=0.3.2
+Requires-Dist: psycopg2-binary>=2.9.9
+Requires-Dist: util

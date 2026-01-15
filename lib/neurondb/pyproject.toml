@@ -1,0 +1,25 @@
+[project]
+name = "neurondb"
+version = "0.0.1"
+description = "Neuron database"
+
+requires-python = "==3.12.*"
+dependencies = [
+    "sqlalchemy>=2.0.32",
+    "pgvector>=0.3.2",
+    "psycopg2-binary>=2.9.9",
+    "util",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["neurondb"]
+
+[tool.pyright]
+strict = ["neurondb"]
+reportMissingTypeStubs = false
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.uv]
+managed = false

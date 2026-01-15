@@ -1,0 +1,23 @@
+# training configuration
+model: "meta-llama/Llama-3.1-8B"
+method: "<your_method_name>"
+dataset: "<your_dataset_name>"
+data_path: "data/feature_circuits"
+save_path: "<your_save_path>"
+num_train_examples: 10
+batch_size: 10
+seed: 42
+device: "cuda"
+nopair: true
+submodule_types: ["mlp"]
+aggregation: "mean"
+
+
+# evaluation configuration
+metrics_to_report: ["auc"]
+
+# auc evaluation configuration
+num_auc_test_examples: 40
+auc_test_random: false
+auc_test_handle_errors: "default"
+auc_test_ablation_type: "mean"

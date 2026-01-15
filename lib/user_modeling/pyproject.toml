@@ -1,0 +1,35 @@
+[project]
+name = "user_modeling"
+version = "0.0.1"
+description = "User modeling"
+
+requires-python = "==3.12.*"
+dependencies = [
+    "aiosqlite>=0.21.0",
+    "env_util",
+    "util",
+    "neurondb",
+    "wandb>=0.19.6",
+    "jupyter>=1.0.0",
+    "statsmodels>=0.14.0",
+    "jupyter-collaboration>=1.2.0",
+    "vllm>=0.7.0",
+    "treescope>=0.1.9",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["user_modeling"]
+
+[tool.pyright]
+strict = ["user_modeling"]
+reportMissingTypeStubs = false
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.uv]
+managed=false

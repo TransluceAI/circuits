@@ -1,0 +1,925 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Layer/Token Grid Graph</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    --bg:#fff; --panel:#f6f7fb; --text:#0f172a; --muted:#576076; --accent:#3b82f6;
+    --edge:rgba(132,134,157,.35); --grid:#c1ccd6; --ticks:#eef2f7; --node-stroke:#fff; --border:#e5e9f2;
+  }
+  html, body { height:100%; margin:0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; background:var(--bg); color:var(--text); }
+  .controls{
+    position:relative;
+    display:flex; flex-wrap:wrap; gap:12px; align-items:center;
+    padding:10px 12px; background:var(--panel); border-bottom:1px solid var(--border);
+  }
+  .controls label{ font-size:13px; color:var(--muted); display:inline-flex; gap:6px; align-items:center; }
+  .controls select, .controls input[type="range"]{ accent-color:var(--accent); }
+  .controls button{ background:#edf2fe; color:#1e3a8a; border:1px solid #c7d7fe; padding:6px 10px; border-radius:8px; cursor:pointer; }
+  #wrap{ position:relative; width:100%; height:calc(100vh - 54px); }
+  #edges{ position:absolute; inset:0; display:block; }
+  #chart{ position:absolute; inset:0; display:block; }
+  .node{ cursor:pointer; }
+
+  /* Tooltip */
+  .tooltip{
+    position:fixed; pointer-events:none; background:#0b0f16; color:#fff;
+    padding:8px 10px; border-radius:10px; font-size:12px; max-width:320px; max-height:420px;
+    overflow-y:auto; line-height:1.4; box-shadow:0 10px 26px rgba(0,0,0,.22); border:1px solid rgba(255,255,255,.06);
+    opacity:0; visibility:hidden; transform:translateY(-2px);
+  }
+  .tooltip.pinned{ pointer-events:auto; }
+  .tooltip table{ color:#fff; }
+
+  /* Dimension tooltip for embedding boxes */
+  .dim-tooltip{
+    position:fixed; pointer-events:none; background:#0b0f16; color:#fff;
+    padding:4px 8px; border-radius:6px; font-size:11px; max-width:200px;
+    line-height:1.3; box-shadow:0 4px 12px rgba(0,0,0,.25); border:1px solid rgba(255,255,255,.08);
+    opacity:0; visibility:hidden; transform:translateY(-2px); z-index:2000;
+    transition:opacity 0.15s ease, visibility 0.15s ease, transform 0.15s ease;
+  }
+
+  .axis{ font-size:11px; fill:var(--muted); }
+  .token-ticks line{ stroke:var(--ticks); }
+  .layer-grid line{ stroke:var(--grid); }
+
+  /* ✨ Cleaner cluster panel aligned with top bar */
+  .cluster-panel{
+    position:absolute; /* anchor relative to #wrap/top bar */
+    right:12px;
+    background:var(--panel);
+    border:1px solid var(--border);
+    border-radius:12px;
+    max-width:280px;
+    min-width:220px;
+    font-size:12px; /* smaller text */
+    z-index:1000;
+    opacity:.95;
+    overflow:hidden; /* for rounded header */
+    transition:transform .15s ease;
+  }
+
+  .cluster-header{
+    display:flex; align-items:center; justify-content:space-between;
+    gap:8px;
+    padding:8px 10px;
+    background:linear-gradient(#ffffff, #f8f9fd);
+    border-bottom:1px solid var(--border);
+    color:var(--muted);
+    font-weight:600;
+    letter-spacing:.2px;
+    cursor:pointer;
+  }
+  .cluster-toggle{
+    font-size:14px;
+    transition:transform .2s ease;
+  }
+  .cluster-toggle.collapsed{
+    transform:rotate(-90deg);
+  }
+  .cluster-scroll{
+    max-height:36vh; /* compact; grows with viewport */
+    overflow:auto;
+    scrollbar-width:thin;
+  }
+  .cluster-scroll::-webkit-scrollbar{ width:8px; }
+  .cluster-scroll::-webkit-scrollbar-thumb{ background:#d8deea; border-radius:8px; }
+
+  .cluster-item{
+    display:grid;
+    grid-template-columns:auto 1fr auto;
+    align-items:center;
+    gap:8px;
+    padding:8px 10px;
+    cursor:pointer;
+    transition:background-color .12s ease;
+  }
+  .cluster-item:hover{ background:rgba(59,130,246,.08); }
+  .cluster-color{ width:12px; height:12px; border-radius:3px; }
+  .cluster-name{ font-weight:600; color:var(--text); }
+  .cluster-sub{ font-size:11px; color:var(--muted); }
+  .cluster-count{
+    font-size:10px; color:#1e3a8a; background:#edf2fe; border:1px solid #c7d7fe;
+    padding:2px 6px; border-radius:999px; justify-self:end;
+  }
+</style>
+</head>
+<body>
+
+<div class="controls">
+  <label>Metric:
+    <select id="metricSelect"></select>
+  </label>
+  <label>Show top <span id="nodePercentValue">100</span>% nodes
+    <input type="range" id="nodePercentSlider" min="0" max="100" value="100" step="5">
+  </label>
+  <label>Show top <span id="edgePercentValue">100</span>% edges
+    <input type="range" id="edgePercentSlider" min="0" max="100" value="100" step="5">
+  </label>
+  <label><input type="checkbox" id="fullOpacityToggle"> Opacity = 1 for nodes</label>
+  <label><input type="checkbox" id="orderByClusterToggle"> Order by cluster</label>
+  <button id="resetZoom">Reset zoom</button>
+</div>
+
+<div id="wrap">
+  <canvas id="edges"></canvas>
+  <svg id="chart"></svg>
+
+  <!-- ✅ Cluster panel now lives inside #wrap so we can align to the top bar cleanly -->
+  <div class="cluster-panel" id="clusterPanel" style="display:none;">
+    <div class="cluster-header" id="clusterHeader">
+      <span>Clusters</span>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span class="cluster-sub" id="clusterSummary"></span>
+        <span class="cluster-toggle" id="clusterToggle">▼</span>
+      </div>
+    </div>
+    <div class="cluster-scroll" id="clusterList"></div>
+  </div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+<div class="dim-tooltip" id="dimTooltip"></div>
+
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script>
+/* -------------------- Data -------------------- */
+const graphData = __GRAPH_JSON__;
+const METRICS = [...graphData.metric_keys];
+const DEFAULT_METRIC = "__DEFAULT_METRIC__";
+
+/* -------------------- Utilities -------------------- */
+const by = sel => d3.select(sel);
+
+// Helper functions for list-based data format
+// Node format: [id, layer, token, neuron, desc, metrics_list, importance_list, cluster, embedding]
+// Link format: [source, target, source_layer, source_token, source_neuron, target_layer, target_token, target_neuron, metrics_list, cluster]
+const nodeId = d => d[0];
+const nodeLayer = d => d[1];
+const nodeToken = d => d[2];
+const nodeNeuron = d => d[3];
+const nodeDesc = d => d[4];
+const nodeMetrics = d => d[5];
+const nodeImportance = d => d[6];
+const nodeCluster = d => d[7];
+const nodeEmbedding = d => d[8];
+
+const linkSource = d => d[0];
+const linkTarget = d => d[1];
+const linkSourceLayer = d => d[2];
+const linkSourceToken = d => d[3];
+const linkSourceNeuron = d => d[4];
+const linkTargetLayer = d => d[5];
+const linkTargetToken = d => d[6];
+const linkTargetNeuron = d => d[7];
+const linkMetrics = d => d[8];
+const linkCluster = d => d[9];
+
+const metricOf = (d, m) => {
+  const metricIdx = METRICS.indexOf(m);
+  if (metricIdx === -1) return 0;
+  // Check if it's a node (has 9 elements with embedding) or link (has 10 elements)
+  const metrics = d.length === 9 ? nodeMetrics(d) : linkMetrics(d);
+  return Math.abs(metrics?.[metricIdx] ?? 0);
+};
+
+const visibleFor = (d, m) => {
+  const metricIdx = METRICS.indexOf(m);
+  if (metricIdx === -1) return false;
+  // Check if it's a node (has 9 elements with embedding) or link (has 10 elements)
+  const metrics = d.length === 9 ? nodeMetrics(d) : linkMetrics(d);
+  const v = metrics?.[metricIdx];
+  return v !== 0 && v !== null && v !== undefined;
+};
+
+const importanceOf = (d, m) => {
+  const metricIdx = METRICS.indexOf(m);
+  if (metricIdx === -1) return 0;
+  const importance = nodeImportance(d);
+  return importance?.[metricIdx] ?? 0;
+};
+
+const idMap = new Map(graphData.nodes.map(n => [nodeId(n), n]));
+
+/* Colors */
+const clusters = [
+  ...(graphData.nodes ?? []).map(d => nodeCluster(d)),
+  ...(graphData.links ?? []).map(d => linkCluster(d)),
+];
+const maxCluster = clusters.length ? d3.max(clusters) : 0;
+const colorScale = d3.scaleOrdinal(d3.schemeTableau10).domain(d3.range((maxCluster ?? 0) + 1));
+const colorFor = d => colorScale(d.originalCluster ?? nodeCluster(d));
+
+/* -------------------- Scene / Layers -------------------- */
+const wrap = by('#wrap').node();
+const controls = by('.controls').node();
+const canvas = by('#edges').node();
+const svg = by('#chart');
+const g = svg.append('g');
+const gAxes = g.append('g');
+const gNodes = g.append('g');
+
+const tooltip = by('#tooltip');
+const dimTooltip = by('#dimTooltip');
+const clusterPanel = by('#clusterPanel');
+const clusterList = by('#clusterList');
+const clusterSummary = by('#clusterSummary');
+const clusterHeader = by('#clusterHeader');
+const clusterToggle = by('#clusterToggle');
+
+// Add collapse functionality
+function updateClusterCollapse() {
+  clusterList.style('display', clusterPanelCollapsed ? 'none' : 'block');
+  clusterToggle.classed('collapsed', clusterPanelCollapsed);
+  clusterToggle.text(clusterPanelCollapsed ? '▶' : '▼');
+}
+
+clusterHeader.on('click', () => {
+  clusterPanelCollapsed = !clusterPanelCollapsed;
+  updateClusterCollapse();
+});
+
+/* Zoom */
+const zoom = d3.zoom().scaleExtent([0.2, 8]).on('zoom', (e) => {
+  currentTransform = e.transform;
+  g.attr('transform', currentTransform);
+  drawEdges();
+});
+svg.call(zoom);
+let currentTransform = d3.zoomIdentity;
+
+/* -------------------- Controls -------------------- */
+const selMetric = by('#metricSelect')
+  .selectAll('option')
+  .data(METRICS)
+  .join('option')
+  .attr('value', d => d)
+  .text(d => d)
+  .select(function(){ return this.parentNode; });
+
+const defaultMetric = METRICS.find(m => m !== "Average") || "Average";
+selMetric.property('value', defaultMetric);
+
+const nodeSlider = by('#nodePercentSlider');
+const nodePercentLabel = by('#nodePercentValue');
+const edgeSlider = by('#edgePercentSlider');
+const edgePercentLabel = by('#edgePercentValue');
+const fullOpacityToggle = by('#fullOpacityToggle');
+const orderByClusterToggle = by('#orderByClusterToggle');
+by('#resetZoom').on('click', () => {
+  svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity);
+});
+
+/* -------------------- Size / Resize -------------------- */
+function positionClusterPanel(){
+  // Since cluster panel is inside #wrap (which is already below controls),
+  // just position it at the top of #wrap with an 8px margin
+  clusterPanel.style('top', '8px');
+}
+function resize() {
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  canvas.width = w; canvas.height = h;
+  svg.attr('width', w).attr('height', h);
+  layout.width = w; layout.height = h;
+  computeScales();
+  drawAxes();
+  positionClusterPanel();
+  update();
+}
+window.addEventListener('resize', () => { positionClusterPanel(); resize(); });
+
+/* -------------------- Layout State -------------------- */
+const layout = {
+  width: wrap.clientWidth,
+  height: wrap.clientHeight,
+  margin: { top: 40, right: 40, bottom: 44, left: 80 },
+  yScale: null,
+  tokenSlots: new Map(),
+  tokenOrder: [],
+  nodePos: new Map(),
+  tokenPad: 8,
+  perNodeGap: 16,
+};
+
+/* Layers and tokens */
+const layers = Array.from(new Set(graphData.nodes.map(n => nodeLayer(n)))).sort((a,b) => a-b);
+const tokensAll = Array.from(new Set(graphData.nodes.map(n => nodeToken(n)).filter(t => t!==null && t!==undefined))).sort((a,b)=>a-b);
+
+function computeScales() {
+  const {height, margin} = layout;
+  layout.yScale = d3.scalePoint().domain(layers).range([height - margin.bottom, margin.top]).padding(0.5);
+}
+
+/* -------------------- Grid Layout -------------------- */
+function computeGridPositions(metric, nodePercent) {
+  const nodes = graphData.nodes.filter(d => visibleFor(d, metric));
+  const sortedNodes = [...nodes].sort((a, b) => metricOf(b, metric) - metricOf(a, metric));
+  const cutoff = Math.ceil(sortedNodes.length * nodePercent / 100);
+  const visNodes = new Set(sortedNodes.slice(0, cutoff).map(d => nodeId(d)));
+
+  const orderByCluster = by('#orderByClusterToggle').property('checked');
+
+  if (orderByCluster) {
+    // Group by cluster instead of token
+    const byClusterLayer = d3.rollup(sortedNodes.slice(0, cutoff), v => v, d => nodeCluster(d), d => nodeLayer(d));
+
+    // Calculate average layer for each cluster for ordering
+    const clusterAvgLayer = new Map();
+    for (const [cluster, layersMap] of byClusterLayer.entries()) {
+      let totalLayer = 0;
+      let count = 0;
+      for (const [layer, nodes] of layersMap.entries()) {
+        totalLayer += layer * nodes.length;
+        count += nodes.length;
+      }
+      clusterAvgLayer.set(cluster, count > 0 ? totalLayer / count : 0);
+    }
+
+    // Sort clusters by ascending average layer
+    const clusterOrder = Array.from(clusterAvgLayer.keys()).sort((a, b) => {
+      const avgA = clusterAvgLayer.get(a);
+      const avgB = clusterAvgLayer.get(b);
+      return avgA - avgB;
+    });
+    layout.tokenOrder = clusterOrder; // Reuse tokenOrder for cluster order
+
+    // Calculate max nodes per cluster per layer for width
+    const clusterMax = new Map();
+    for (const [cluster, layersMap] of byClusterLayer.entries()) {
+      let max = 0;
+      for (const arr of layersMap.values()) max = Math.max(max, arr.length);
+      clusterMax.set(cluster, max);
+    }
+
+    // Create slots for clusters
+    const slots = new Map();
+    let cursor = layout.margin.left;
+    for (const cluster of clusterOrder) {
+      const maxCount = clusterMax.get(cluster) || 1;
+      const baseWidth = maxCount === 1 ? 6 : layout.tokenPad;
+      const w = baseWidth + layout.perNodeGap * maxCount;
+      slots.set(cluster, { start: cursor, width: w });
+      cursor += w + layout.tokenPad;
+    }
+    layout.tokenSlots = slots;
+
+    // Position nodes within clusters
+    const nodePos = new Map();
+    for (const [cluster, layersMap] of byClusterLayer.entries()) {
+      const slot = slots.get(cluster);
+      if (!slot) continue;
+      const cx = slot.start + slot.width / 2;
+      for (const [layer, arr] of layersMap.entries()) {
+        const arrVis = arr.filter(n => visNodes.has(nodeId(n)));
+        const k = arrVis.length;
+        if (k === 0) continue;
+        const totalW = (k - 1) * layout.perNodeGap;
+        const startX = cx - totalW / 2;
+        const y = layout.yScale(layer);
+        arrVis.forEach((n, i) => nodePos.set(nodeId(n), { x: startX + i * layout.perNodeGap, y }));
+      }
+    }
+    layout.nodePos = nodePos;
+  } else {
+    // Original token-based ordering
+    const byTokLayer = d3.rollup(sortedNodes.slice(0, cutoff), v => v, d => nodeToken(d), d => nodeLayer(d));
+
+    const tokenMax = new Map();
+    for (const [tok, m] of byTokLayer.entries()) {
+      let max = 0;
+      for (const arr of m.values()) max = Math.max(max, arr.length);
+      tokenMax.set(tok, max);
+    }
+
+    const tokenOrder = Array.from(tokenMax.keys()).sort((a,b) => a-b);
+    layout.tokenOrder = tokenOrder;
+
+    const slots = new Map();
+    let cursor = layout.margin.left;
+    for (const tok of tokenOrder) {
+      const maxCount = tokenMax.get(tok) || 1;
+      const baseWidth = maxCount === 1 ? 6 : layout.tokenPad;
+      const w = baseWidth + layout.perNodeGap * maxCount;
+      slots.set(tok, { start: cursor, width: w });
+      cursor += w + layout.tokenPad;
+    }
+    layout.tokenSlots = slots;
+
+    const nodePos = new Map();
+    for (const [tok, layersMap] of byTokLayer.entries()) {
+      const slot = slots.get(tok);
+      if (!slot) continue;
+      const cx = slot.start + slot.width / 2;
+      for (const [layer, arr] of layersMap.entries()) {
+        const arrVis = arr.filter(n => visNodes.has(nodeId(n)));
+        const k = arrVis.length;
+        if (k === 0) continue;
+        const totalW = (k - 1) * layout.perNodeGap;
+        const startX = cx - totalW / 2;
+        const y = layout.yScale(layer);
+        arrVis.forEach((n, i) => nodePos.set(nodeId(n), { x: startX + i * layout.perNodeGap, y }));
+      }
+    }
+    layout.nodePos = nodePos;
+  }
+  return { visNodes };
+}
+
+/* -------------------- Scales for size/width -------------------- */
+const rScale = d3.scaleSqrt().range([5, 22]);
+const wScale = d3.scaleSqrt().range([0.9, 7]);
+
+/* -------------------- Axes / Grid -------------------- */
+function drawAxes() {
+  gAxes.selectAll('*').remove();
+
+  const layerAxis = gAxes.append('g').attr('class', 'axis');
+  layerAxis.selectAll('text').data(layers).join('text')
+    .attr('x', layout.margin.left - 48)
+    .attr('y', d => layout.yScale(d) + 4)
+    .text(d => `L${d}`);
+
+  const tokenTicks = gAxes.append('g').attr('class', 'token-ticks');
+  // for (const [tok, slot] of layout.tokenSlots.entries()) {
+  //   tokenTicks.append('line')
+  //     .attr('x1', slot.start + slot.width / 2)
+  //     .attr('x2', slot.start + slot.width / 2)
+  //     .attr('y1', layout.margin.top - 12)
+  //     .attr('y2', layout.height - layout.margin.bottom + 12);
+  // }
+
+  const tokenAxis = gAxes.append('g').attr('class', 'axis');
+  const N = Math.max(1, Math.floor(layout.tokenOrder.length / 24));
+  const orderByCluster = by('#orderByClusterToggle').property('checked');
+
+  layout.tokenOrder.forEach((item, idx) => {
+    if (idx % N !== 0) return;
+    const slot = layout.tokenSlots.get(item);
+    if (!slot) return;
+
+    let labelText;
+    if (orderByCluster) {
+      // Show cluster label or cluster ID
+      const clusterLabel = graphData.cluster_labels?.[item] || `C${item}`;
+      if (item === "-1") {
+        labelText = "Input tokens";
+      } else if (item === "-2") {
+        labelText = "Logits";
+      } else {
+        labelText = clusterLabel;
+      }
+    } else {
+      // Show token ID
+      labelText = String(item);
+    }
+
+    tokenAxis.append('text')
+      .attr('text-anchor', 'middle')
+      .attr('x', slot.start + slot.width / 2)
+      .attr('y', layout.height - layout.margin.bottom + 28)
+      .text(labelText);
+  });
+}
+
+/* -------------------- Cluster Management -------------------- */
+let clusterStats = new Map();
+let hoveredCluster = null;
+let filteredNodes = [];
+let filteredLinks = [];
+
+function updateClusterStats() {
+  const counts = new Map();
+  filteredNodes.forEach(node => {
+    const c = nodeCluster(node);
+    counts.set(c, (counts.get(c) || 0) + 1);
+  });
+  clusterStats = counts;
+}
+
+let clusterPanelCollapsed = false;
+
+function updateClusterPanel() {
+  updateClusterStats();
+
+  // Filter out clusters with id -1
+  const sortedClusters = Array.from(clusterStats.entries())
+    .filter(([clusterId]) => clusterId !== -1)
+    .sort((a, b) => b[1] - a[1]);
+  clusterSummary.text(sortedClusters.length ? `${sortedClusters.length} groups` : '');
+
+  const items = clusterList.selectAll('.cluster-item').data(sortedClusters, d => d[0]);
+  items.exit().remove();
+
+  const enter = items.enter().append('div').attr('class', 'cluster-item');
+  enter.append('div').attr('class', 'cluster-color').style('background-color', d => colorScale(d[0]));
+  const textWrap = enter.append('div').style('min-width', 0); // allow truncation
+  textWrap.append('div').attr('class', 'cluster-name').text(d => {
+    const clusterId = d[0];
+    console.log(graphData.cluster_labels[clusterId]);
+    // Try multiple key formats since cluster labels might be stored with different types
+    const label = graphData.cluster_labels?.[clusterId] ||
+                  `Cluster ${clusterId}`;
+    return label;
+  });
+  enter.append('div').attr('class', 'cluster-count');
+
+  const merged = enter.merge(items);
+  merged.select('.cluster-count').text(d => `${d[1]} neurons`);
+
+  merged
+    .on('mouseenter', (_, d) => { hoveredCluster = d[0]; updateNodeOpacity(); })
+    .on('mouseleave', () => { hoveredCluster = null; updateNodeOpacity(); });
+
+  // Show panel only when there are clusters
+  clusterPanel.style('display', sortedClusters.length ? 'block' : 'none');
+
+  // Update collapsed state
+  updateClusterCollapse();
+}
+
+/* -------------------- Opacity -------------------- */
+function updateNodeOpacity() {
+  const fullOpacity = by('#fullOpacityToggle').property('checked');
+  const metric = selMetric.property('value');
+
+  const impVals = filteredNodes.map(d => importanceOf(d, metric)).filter(v => v > 0);
+  const opacityScale = (impVals.length > 0)
+    ? d3.scaleLinear().domain(d3.extent(impVals)).range([0.5, 1.0])
+    : d3.scaleLinear().domain([0,1]).range([0.85, 1.0]);
+
+  gNodes.selectAll('circle.node')
+    .attr('fill-opacity', d => {
+      if (fullOpacity) return 1;
+      let o = opacityScale(importanceOf(d, metric));
+      if (hoveredCluster !== null && nodeCluster(d) !== hoveredCluster) o *= 0.2;
+      return o;
+    });
+}
+
+/* -------------------- Update / Render -------------------- */
+function update() {
+  const metric = selMetric.property('value');
+  const nodePercent = +nodeSlider.property('value');
+  const edgePercent = +edgeSlider.property('value');
+  nodePercentLabel.text(nodePercent);
+  edgePercentLabel.text(edgePercent);
+
+  const nodesVisAll = graphData.nodes.filter(d => visibleFor(d, metric));
+  const edgesVisAll = graphData.links.filter(d => visibleFor(d, metric));
+
+  const sortedNodes = [...nodesVisAll].sort((a,b)=>metricOf(b,metric)-metricOf(a,metric));
+  const sortedLinks = [...edgesVisAll].sort((a,b)=>metricOf(b,metric)-metricOf(a,metric));
+
+  const nodeCut = Math.ceil(sortedNodes.length * nodePercent / 100);
+  const edgeCut = Math.ceil(sortedLinks.length * edgePercent / 100);
+
+  const topNodeSet = new Set(sortedNodes.slice(0, nodeCut).map(d => nodeId(d)));
+  filteredNodes = sortedNodes.slice(0, nodeCut);
+  filteredLinks = sortedLinks.slice(0, edgeCut).filter(l => topNodeSet.has(linkSource(l)) && topNodeSet.has(linkTarget(l)));
+
+  rScale.domain(d3.extent(filteredNodes.map(d => metricOf(d, metric)) || [0,1]));
+  wScale.domain(d3.extent(filteredLinks.map(d => metricOf(d, metric)) || [0,1]));
+
+  computeGridPositions(metric, nodePercent);
+
+  const layerGrid = gAxes.select('.layer-grid');
+  if (layerGrid.empty()) gAxes.insert('g', ':first-child').attr('class', 'layer-grid');
+
+  let rightmostX = layout.margin.left;
+  for (const [, slot] of layout.tokenSlots.entries()) rightmostX = Math.max(rightmostX, slot.start + slot.width);
+
+  gAxes.select('.layer-grid').selectAll('line').data(layers).join('line')
+    .attr('x1', layout.margin.left - 40)
+    .attr('x2', rightmostX + layout.tokenPad)
+    .attr('y1', d => layout.yScale(d))
+    .attr('y2', d => layout.yScale(d));
+
+  updateClusterPanel();
+
+  const nodesSel = gNodes.selectAll('circle.node').data(filteredNodes, d => nodeId(d));
+  nodesSel.exit().remove();
+
+  nodesSel.enter()
+    .append('circle')
+    .attr('class','node')
+    .attr('r',0)
+    .attr('fill',d=>colorFor(d))
+    .attr('stroke','var(--node-stroke)')
+    .attr('stroke-width',1.25)
+    .merge(nodesSel)
+    .attr('cx', d => (layout.nodePos.get(nodeId(d))?.x ?? layout.margin.left))
+    .attr('cy', d => (layout.nodePos.get(nodeId(d))?.y ?? layout.margin.top))
+    .attr('fill', d => colorFor(d))
+    .attr('r', d => rScale(metricOf(d, metric)));
+
+  updateNodeOpacity();
+
+    // Layer -1 node labels (tilted 45 degrees, end at bottom-left of neuron)
+    const layer1Nodes = filteredNodes.filter(d => nodeLayer(d) === -1);
+  const nodeLabelsNeg1 = gNodes.selectAll('text.node-label-neg1')
+    .data(layer1Nodes, d => nodeId(d));
+
+  nodeLabelsNeg1.exit().remove();
+
+  nodeLabelsNeg1.enter()
+    .append('text')
+    .attr('class', 'node-label-neg1')
+    .attr('text-anchor', 'end')
+    .attr('dominant-baseline', 'middle')
+    .style('font-size', '10px')
+    .style('fill', 'var(--text)')
+    .style('pointer-events', 'none')
+    .merge(nodeLabelsNeg1)
+    .attr('x', d => {
+      const pos = layout.nodePos.get(nodeId(d));
+      if (!pos) return layout.margin.left;
+      const radius = rScale(metricOf(d, metric));
+      const spacing = 8; // Extra spacing from circle edge
+      // Position at bottom-left of circle with extra spacing
+      return pos.x - (radius + spacing) * Math.cos(Math.PI / 4);
+    })
+    .attr('y', d => {
+      const pos = layout.nodePos.get(nodeId(d));
+      if (!pos) return layout.margin.top;
+      const radius = rScale(metricOf(d, metric));
+      const spacing = 8; // Extra spacing from circle edge
+      // Position at bottom-left of circle with extra spacing
+      return pos.y + (radius + spacing) * Math.sin(Math.PI / 4);
+    })
+    .attr('transform', d => {
+      const pos = layout.nodePos.get(nodeId(d));
+      if (!pos) return '';
+      const radius = rScale(metricOf(d, metric));
+      const spacing = 8;
+      const x = pos.x - (radius + spacing) * Math.cos(Math.PI / 4);
+      const y = pos.y + (radius + spacing) * Math.sin(Math.PI / 4);
+      return `rotate(-45, ${x}, ${y})`;
+    })
+    .text(d => nodeDesc(d) || nodeId(d));
+
+  // Maximum layer node labels (tilted 45 degrees, start at top-right of neuron)
+  const maxLayer = d3.max(layers) || 0;
+  const maxLayerNodes = filteredNodes.filter(d => nodeLayer(d) === maxLayer);
+  const nodeLabelsMax = gNodes.selectAll('text.node-label-max')
+    .data(maxLayerNodes, d => nodeId(d));
+
+  nodeLabelsMax.exit().remove();
+
+  nodeLabelsMax.enter()
+    .append('text')
+    .attr('class', 'node-label-max')
+    .attr('text-anchor', 'start')
+    .attr('dominant-baseline', 'middle')
+    .style('font-size', '10px')
+    .style('fill', 'var(--text)')
+    .style('pointer-events', 'none')
+    .merge(nodeLabelsMax)
+    .attr('x', d => {
+      const pos = layout.nodePos.get(nodeId(d));
+      if (!pos) return layout.margin.left;
+      const radius = rScale(metricOf(d, metric));
+      const spacing = 8; // Extra spacing from circle edge
+      // Position at top-right of circle with extra spacing
+      return pos.x + (radius + spacing) * Math.cos(Math.PI / 4);
+    })
+    .attr('y', d => {
+      const pos = layout.nodePos.get(nodeId(d));
+      if (!pos) return layout.margin.top;
+      const radius = rScale(metricOf(d, metric));
+      const spacing = 8; // Extra spacing from circle edge
+      // Position at top-right of circle with extra spacing
+      return pos.y - (radius + spacing) * Math.sin(Math.PI / 4);
+    })
+    .attr('transform', d => {
+      const pos = layout.nodePos.get(nodeId(d));
+      if (!pos) return '';
+      const radius = rScale(metricOf(d, metric));
+      const spacing = 8;
+      const x = pos.x + (radius + spacing) * Math.cos(Math.PI / 4);
+      const y = pos.y - (radius + spacing) * Math.sin(Math.PI / 4);
+      return `rotate(-45, ${x}, ${y})`;
+    })
+    .text(d => nodeDesc(d) || nodeId(d));
+
+  gNodes.selectAll('circle.node')
+    .on('mousemove', (event, d) => {
+      if (!tooltip.classed('pinned')) {
+        // Only update tooltip if it's not pinned
+        const html = nodeTooltipHTML(d, metric);
+        const rect = setTooltip(html);
+        placeTooltip(event, rect);
+      }
+    })
+    .on('mouseout', () => { if (!tooltip.classed('pinned')) hideTooltip(); })
+    .on('click', (event, d) => {
+      event.stopPropagation();
+      if (tooltip.classed('pinned') && tooltip.datum() === d) { hideTooltip(true); return; }
+      tooltip.html(nodeTooltipHTML(d, metric)).classed('pinned', true).datum(d)
+        .style('opacity',1).style('visibility','visible');
+      const rect = tooltip.node().getBoundingClientRect();
+      placeTooltip(event, rect);
+    });
+
+  drawEdges();
+}
+
+/* -------------------- Canvas Edge Renderer -------------------- */
+function drawEdges(){
+  const ctx = canvas.getContext('2d');
+  const { width, height } = canvas;
+  ctx.save();
+  ctx.clearRect(0,0,width,height);
+  ctx.setTransform(currentTransform.k,0,0,currentTransform.k,currentTransform.x,currentTransform.y);
+  ctx.lineCap='round'; ctx.globalAlpha=1.0;
+
+  ctx.strokeStyle='rgba(220,228,238,.9)';
+  ctx.lineWidth = 1 / currentTransform.k;
+  for (const [, slot] of layout.tokenSlots.entries()){
+    ctx.beginPath();
+    ctx.moveTo(slot.start + slot.width/2, layout.margin.top - 18);
+    ctx.lineTo(slot.start + slot.width/2, layout.height - layout.margin.bottom + 18);
+    ctx.stroke();
+  }
+
+  for (const e of filteredLinks){
+    const s = layout.nodePos.get(linkSource(e));
+    const t = layout.nodePos.get(linkTarget(e));
+    if (!s || !t) continue;
+    const w = wScale(metricOf(e, selMetric.property('value')));
+    ctx.lineWidth = Math.max(0.9, w) / currentTransform.k;
+    ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--edge');
+    ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/* -------------------- Tooltip helpers + truncation -------------------- */
+function setTooltip(html){
+  tooltip.html(html).style('opacity',0).style('visibility','visible');
+  return tooltip.node().getBoundingClientRect();
+}
+function placeTooltip(event, rect){
+  const pad=12, margin=8;
+  let left = event.pageX + pad, top = event.pageY + pad;
+  if (left + rect.width > window.innerWidth - margin) left = event.pageX - rect.width - pad;
+  if (top + rect.height > window.innerHeight - margin) top = event.pageY - rect.height - pad;
+  tooltip.style('opacity',1).style('visibility','visible')
+    .style('left', Math.max(margin,left)+'px')
+    .style('top', Math.max(margin,top)+'px');
+}
+function hideTooltip(clear=false){
+  tooltip.classed('pinned', false).datum(null).style('opacity',0).style('visibility','hidden');
+}
+
+/* -------------------- Dimension Tooltip helpers -------------------- */
+function showDimTooltip(event, dimIndex, description, value) {
+  const valueText = value !== null && value !== undefined ? `Value: ${value}` : 'Value: null';
+  dimTooltip.html(`<div style="font-weight:600;">Dim ${dimIndex}</div><div>${description}</div><div style="color:#cbd5e1; font-size:10px; margin-top:2px;">${valueText}</div>`)
+    .style('opacity', 1)
+    .style('visibility', 'visible')
+    .style('transform', 'translateY(0px)');
+
+  const rect = dimTooltip.node().getBoundingClientRect();
+  const pad = 8;
+  let left = event.pageX - rect.width / 2;
+  let top = event.pageY - rect.height - pad;
+
+  // Keep tooltip within viewport bounds
+  const margin = 8;
+  if (left < margin) left = margin;
+  if (left + rect.width > window.innerWidth - margin) left = window.innerWidth - rect.width - margin;
+  if (top < margin) top = event.pageY + pad; // Show below if no room above
+
+  dimTooltip.style('left', left + 'px').style('top', top + 'px');
+}
+
+function hideDimTooltip() {
+  dimTooltip.style('opacity', 0)
+    .style('visibility', 'hidden')
+    .style('transform', 'translateY(-2px)');
+}
+
+d3.select('body').on('click', (event) => {
+  if (!event.target.closest('circle') && !event.target.closest('#tooltip')) hideTooltip(true);
+});
+
+function nodeTooltipHTML(d, metric){
+  const rows = METRICS
+    .map(m => ({ m, imp: importanceOf(d, m), val: metricOf(d, m) }))
+    .sort((a,b) => b.imp - a.imp)
+    .map(x => `<tr><td>${x.m}</td><td style="text-align:right;">${(x.val*100).toFixed(2)}%</td><td style="text-align:right;">${x.imp.toFixed(3)}</td></tr>`)
+    .join("");
+
+  const desc = nodeDesc(d) ? `<div style="margin:4px 0 6px; color:#cbd5e1;">${nodeDesc(d)}</div>` : '';
+
+  const metricIdx = METRICS.indexOf(metric);
+  const metricValue = metricIdx !== -1 ? nodeMetrics(d)[metricIdx] : 0;
+
+  // Generate embedding visualization if available
+  let embeddingViz = '';
+  const embedding = nodeEmbedding(d);
+  if (embedding && embedding.length > 0) {
+    // Create a color scale for embedding values
+    const embeddingValues = embedding.filter(v => v !== null && v !== undefined && !isNaN(v));
+    if (embeddingValues.length > 0) {
+      const minVal = Math.min(...embeddingValues);
+      const maxVal = Math.max(...embeddingValues);
+      const absMax = Math.max(Math.abs(minVal), Math.abs(maxVal));
+      const sumVal = embeddingValues.reduce((x, y) => x + y, 0);
+
+      // Check if contrib_dim_to_label is available and matches embedding length
+      const hasContribDim = graphData.contrib_dim_to_label &&
+                           Object.keys(graphData.contrib_dim_to_label).length === embedding.length;
+
+      // Create colored boxes for each embedding dimension
+      const boxes = embedding.map((val, idx) => {
+        if (val === null || val === undefined || isNaN(val)) {
+          const baseStyle = "width:8px; height:8px; background:#ddd; border:1px solid #999; display:inline-block; margin:1px;";
+
+          if (hasContribDim) {
+            const description = graphData.contrib_dim_to_label[idx] || `Dimension ${idx}`;
+            return `<div class="embedding-box" data-dim-idx="${idx}" data-dim-desc="${description}" data-dim-val="null" style="${baseStyle} cursor:pointer;"></div>`;
+          } else {
+            return `<div style="${baseStyle}"></div>`;
+          }
+        }
+
+        // Create color: white for 0, blue for negative, red for positive
+        let color;
+        if (val === 0) {
+          color = 'rgb(255, 255, 255)'; // White for exactly 0
+        } else if (val < 0) {
+          // Blue for negative values, intensity based on absolute value relative to absMax
+          const intensity = absMax > 0 ? Math.min(255, Math.floor(Math.abs(val) / absMax * 255)) : 128;
+          color = `rgb(${255 - intensity}, ${255 - intensity}, 255)`;
+        } else {
+          // Red for positive values, intensity based on value relative to absMax
+          const intensity = absMax > 0 ? Math.min(255, Math.floor(val / absMax * 255)) : 128;
+          color = `rgb(255, ${255 - intensity}, ${255 - intensity})`;
+        }
+
+        const baseStyle = `width:8px; height:8px; background:${color}; border:1px solid #999; display:inline-block; margin:1px;`;
+
+        if (hasContribDim) {
+          const description = graphData.contrib_dim_to_label[idx] || `Dimension ${idx}`;
+          return `<div class="embedding-box" data-dim-idx="${idx}" data-dim-desc="${description}" data-dim-val="${val.toFixed(4)}" style="${baseStyle} cursor:pointer;"></div>`;
+        } else {
+          return `<div style="${baseStyle}"></div>`;
+        }
+      }).join('');
+
+      embeddingViz = `
+        <div style="margin:6px 0;">
+          <div style="font-weight:600; margin-bottom:3px; font-size:11px;">Embedding (${embedding.length}D):</div>
+          <div style="max-width:280px; line-height:10px;">${boxes}</div>
+          <div style="font-size:10px; color:#999; margin-top:2px;">Range: ${minVal.toFixed(3)} to ${maxVal.toFixed(3)} (abs max: ${absMax.toFixed(3)}) Sum: ${sumVal.toFixed(3)}</div>
+        </div>`;
+    }
+  }
+
+  const tooltipHTML = `
+    <div style="font-weight:600; margin-bottom:2px;">Node ${nodeId(d)}</div>
+    ${desc}
+    <div style="margin-bottom:6px;"><b>Token:</b> ${nodeToken(d) ?? '—'} · <b>Layer:</b> ${nodeLayer(d)} · <b>${metric}:</b> ${(metricValue ?? 0).toFixed(4)}</div>
+    ${embeddingViz}
+    <table style="margin-top:6px; width:100%; border-collapse:collapse; font-size:11px;">
+      <thead><tr><th style="text-align:left;">Metric</th><th style="text-align:right;">Value</th><th style="text-align:right;">Importance</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+
+  // Set up event listeners for embedding boxes after a short delay to ensure DOM is updated
+  setTimeout(() => {
+    d3.selectAll('.embedding-box').on('mouseenter', function(event) {
+      const dimIdx = this.getAttribute('data-dim-idx');
+      const dimDesc = this.getAttribute('data-dim-desc');
+      const dimVal = this.getAttribute('data-dim-val');
+      if (dimIdx !== null && dimDesc !== null) {
+        const value = dimVal === 'null' ? null : parseFloat(dimVal);
+        showDimTooltip(event, dimIdx, dimDesc, value);
+      }
+    }).on('mouseleave', function() {
+      hideDimTooltip();
+    });
+  }, 10);
+
+  return tooltipHTML;
+}
+
+/* -------------------- Events -------------------- */
+const debouncedUpdate = (() => { let t; return () => { clearTimeout(t); t = setTimeout(update, 40); }; })();
+selMetric.on('change', debouncedUpdate);
+nodeSlider.on('input', function(){ nodePercentLabel.text(this.value); debouncedUpdate(); });
+edgeSlider.on('input', function(){ edgePercentLabel.text(this.value); debouncedUpdate(); });
+fullOpacityToggle.on('change', debouncedUpdate);
+orderByClusterToggle.on('change', debouncedUpdate);
+
+/* -------------------- Init -------------------- */
+computeScales();
+positionClusterPanel();
+resize();
+</script>
+</body>
+</html>
